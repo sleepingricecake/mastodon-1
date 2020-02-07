@@ -95,3 +95,45 @@ else
     url: ENV.fetch('PAPERCLIP_ROOT_URL', '/system') + '/:class/:attachment/:id_partition/:style/:filename',
   )
 end
+
+# In some places in the code, we rescue this exception, but we don't always
+# load the S3 library, so it may be an undefined constant:
+
+unless defined?(Seahorse)
+  module Seahorse
+    module Client
+      class NetworkingError < StandardError; end
+    end
+  end
+end
+
+class Paperclip::Attachment
+  def save
+    circuit_break! do
+      flush_deletes unless @options[:keep_old_files]
+
+      process = only_process
+      @queued_for_write.except!(:original) if process.any? && !process.include?(:original)
+
+      flush_writes
+    end
+
+    @dirty = false
+    true
+  end
+
+  private
+
+  STOPLIGHT_THRESHOLD = 10
+  STOPLIGHT_COOLDOWN  = 30
+
+  def circuit_break!(&block)
+    Stoplight('object-storage', &block).with_threshold(STOPLIGHT_THRESHOLD).with_cool_off_time(STOPLIGHT_COOLDOWN).with_error_handler do |error, handle|
+      if error.is_a?(Seahorse::Client::NetworkingError)
+        handle.call(error)
+      else
+        raise error
+      end
+    end.run
+  end
+end
