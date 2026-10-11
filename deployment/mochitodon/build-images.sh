@@ -71,7 +71,8 @@ builder=${BUILD_BUILDER_NAME:-"mochitodon-${source_commit:0:12}"}
 if docker buildx inspect "$builder" >/dev/null 2>&1; then
   builder_container="buildx_buildkit_${builder}0"
   [[ $(docker inspect --format '{{.Config.Image}}' "$builder_container") == 'moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea' ]] || { echo 'Existing builder image mismatch' >&2; exit 1; }
-  [[ $(docker exec "$builder_container" cat /etc/buildkit/buildkitd.toml) == $(cat "$here/buildkitd.toml") ]] || { echo 'Existing builder config mismatch' >&2; exit 1; }
+  docker exec "$builder_container" cat /etc/buildkit/buildkitd.toml >"$BUILD_WORKSPACE/builder-config.actual.toml"
+  python3 "$here/verify-buildkit-config.py" "$here/buildkitd.toml" "$BUILD_WORKSPACE/builder-config.actual.toml"
 else
   docker buildx create --name "$builder" --driver docker-container --driver-opt image=moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea --driver-opt memory=8g --driver-opt memory-swap=8g --driver-opt cpu-period=100000 --driver-opt cpu-quota=200000 --buildkitd-config "$here/buildkitd.toml"
 fi
