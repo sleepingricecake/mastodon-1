@@ -311,7 +311,7 @@ COPY Gemfile* /opt/mastodon/
 COPY --from=libvips /usr/local/libvips/lib /usr/local/lib
 COPY --from=libvips /usr/local/libvips/include /usr/local/include
 
-RUN ldconfig
+RUN ldconfig; chmod -R a+rX /opt/mastodon
 
 RUN \
   # Mount Ruby Gem caches
@@ -364,6 +364,9 @@ COPY --from=bundler /usr/local/bundle/ /usr/local/bundle/
 
 RUN \
   ldconfig; \
+  # Build context may have root-only modes from a private checkout.
+  # This tree contains public source only; normalize it inside the image.
+  chmod -R a+rX /opt/mastodon; \
   # Use Ruby on Rails to create Mastodon assets
   SECRET_KEY_BASE_DUMMY=1 \
   bundle exec rails assets:precompile; \
@@ -403,6 +406,8 @@ RUN \
 
 RUN \
   # Pre-create and chown system volume to Mastodon user
+  # Apply after every source/asset COPY, before dropping privileges.
+  chmod -R a+rX /opt/mastodon; \
   mkdir -p /opt/mastodon/public/system; \
   chown mastodon:mastodon /opt/mastodon/public/system; \
   # Set Mastodon user as owner of tmp folder
@@ -427,7 +432,7 @@ COPY --from=ffmpeg /usr/local/ffmpeg/lib /usr/local/lib
 COPY --from=node /usr/local/bin /usr/local/bin
 COPY --from=node /usr/local/lib /usr/local/lib
 ENV RAILS_ENV=test NODE_ENV=test RUBY_YJIT_ENABLE=0
-RUN ldconfig; bundle config unset --local without; bundle config unset --global without; bundle install -j2; mkdir -p /opt/mastodon/tmp /opt/mastodon/public/system; chown -R mastodon:mastodon /opt/mastodon/tmp /opt/mastodon/public/system
+RUN ldconfig; bundle config unset --local without; bundle config unset --global without; bundle install -j2; chmod -R a+rX /opt/mastodon; mkdir -p /opt/mastodon/tmp /opt/mastodon/public/system; chown -R mastodon:mastodon /opt/mastodon/tmp /opt/mastodon/public/system
 USER mastodon
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bundle", "exec", "rspec", "spec/lib/paperclip/vips_lazy_thumbnail_spec.rb", "spec/models/media_attachment_spec.rb", "spec/requests/api/v1/instance_spec.rb", "spec/requests/api/v2/instance_spec.rb"]

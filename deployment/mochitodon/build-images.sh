@@ -64,7 +64,10 @@ gpg --no-options --batch --yes --no-tty --no-autostart --homedir "$verify/gnupg"
 gpgv --homedir "$verify/gnupg" --keyring "$verify/ffmpeg-release.gpg" --status-fd 1 "$verify/ffmpeg-9.0.2.tar.xz.asc" "$verify/ffmpeg-9.0.2.tar.xz" >"$verify/signature-status.txt"
 awk '$1=="[GNUPG:]" && $2=="VALIDSIG" && ($3=="FCF986EA15E6E293A5644F10B4322F04D67658D8" || $NF=="FCF986EA15E6E293A5644F10B4322F04D67658D8") { valid=1 } END {exit !valid}' "$verify/signature-status.txt"
 echo 'Pinned FFmpeg archive and signing primary verified without an agent'
-builder="mochitodon-${source_commit:0:12}"
+# Reuse a reviewed builder cache across source revisions when explicitly selected.
+# Its exact image, configuration and resource limits are still verified below.
+builder=${BUILD_BUILDER_NAME:-"mochitodon-${source_commit:0:12}"}
+[[ "$builder" =~ ^mochitodon-[a-f0-9]{12}$ ]] || { echo 'Invalid reviewed builder name' >&2; exit 1; }
 if docker buildx inspect "$builder" >/dev/null 2>&1; then
   builder_container="buildx_buildkit_${builder}0"
   [[ $(docker inspect --format '{{.Config.Image}}' "$builder_container") == 'moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea' ]] || { echo 'Existing builder image mismatch' >&2; exit 1; }

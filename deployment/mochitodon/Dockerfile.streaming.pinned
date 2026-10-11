@@ -103,6 +103,9 @@ RUN \
   # Install Node packages
   yarn workspaces focus --production @mastodon/streaming;
 
+# Normalize public source after every COPY/install, independently of host umask.
+RUN chmod -R a+rX /opt/mastodon
+
 # Set the running user for resulting container
 USER mastodon
 # Expose default Streaming ports
