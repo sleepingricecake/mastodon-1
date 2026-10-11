@@ -15,7 +15,7 @@ case "$target" in mastodon|test|streaming|all) ;; *) exit 1 ;; esac
 : "${BUILD_WORKSPACE:?Dedicated absolute source verification directory}"
 [[ "$GID" =~ ^[0-9]+$ ]] || exit 1
 [[ "$BUILD_WORKSPACE" == /* && ! -L "$BUILD_WORKSPACE" ]] || exit 1
-for command in docker git curl gpg sha256sum df awk; do command -v "$command" >/dev/null; done
+for command in docker git curl gpg gpgv python3 sha256sum df awk; do command -v "$command" >/dev/null; done
 major=$(docker version --format '{{.Server.Version}}' | cut -d. -f1)
 [[ "$major" =~ ^[0-9]+$ && "$major" -ge 28 ]] || exit 1
 [[ -z $(git -C "$source_root" status --porcelain) ]] || { echo 'Commit the fully reviewed source before build' >&2; exit 1; }
@@ -40,14 +40,30 @@ mkdir -p -- "$verify" "$verify/gnupg"
 chmod 700 "$verify" "$verify/gnupg"
 for item in ffmpeg-9.0.2.tar.xz ffmpeg-9.0.2.tar.xz.asc; do
   resource_guard
-  curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$verify/$item" "https://ffmpeg.org/releases/$item"
+  curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 --output "$verify/$item" "https://ffmpeg.org/releases/$item"
 done
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$verify/ffmpeg-devel.asc" https://ffmpeg.org/ffmpeg-devel.asc
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 --max-time 180 --retry 2 --retry-delay 2 --output "$verify/ffmpeg-devel.asc" https://ffmpeg.org/ffmpeg-devel.asc
 printf '%s  %s\n' 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e "$verify/ffmpeg-9.0.2.tar.xz" | sha256sum -c -
-fingerprint=$(gpg --homedir "$verify/gnupg" --with-colons --import-options show-only --import "$verify/ffmpeg-devel.asc" 2>/dev/null | awk -F: '$1=="fpr" {print $10; exit}')
-[[ "$fingerprint" == FCF986EA15E6E293A5644F10B4322F04D67658D8 ]] || { echo 'Unexpected FFmpeg signing key' >&2; exit 1; }
-gpg --homedir "$verify/gnupg" --import "$verify/ffmpeg-devel.asc"
-gpg --homedir "$verify/gnupg" --verify "$verify/ffmpeg-9.0.2.tar.xz.asc" "$verify/ffmpeg-9.0.2.tar.xz"
+# Only public-key parsing and detached verification are needed. Importing with
+# gpg can start an agent and fail when its socket path exceeds the Unix limit.
+gpg --no-options --batch --no-tty --no-autostart --homedir "$verify/gnupg" --with-colons --show-keys "$verify/ffmpeg-devel.asc" >"$verify/key-listing.txt"
+python3 - "$verify/key-listing.txt" <<'PY'
+import pathlib, sys, time
+rows = [line.split(':') for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+primary = [i for i, row in enumerate(rows) if row[0] == 'pub']
+if len(primary) != 1:
+    raise SystemExit('Require exactly one FFmpeg primary signing key')
+i = primary[0]
+key = rows[i]
+if key[1] in ('r', 'e', 'd') or (key[6] and int(key[6]) <= time.time()):
+    raise SystemExit('FFmpeg primary key is revoked, expired or disabled')
+if i + 1 >= len(rows) or rows[i + 1][0] != 'fpr' or rows[i + 1][9] != 'FCF986EA15E6E293A5644F10B4322F04D67658D8':
+    raise SystemExit('Unexpected FFmpeg signing key')
+PY
+gpg --no-options --batch --yes --no-tty --no-autostart --homedir "$verify/gnupg" --output "$verify/ffmpeg-release.gpg" --dearmor "$verify/ffmpeg-devel.asc"
+gpgv --homedir "$verify/gnupg" --keyring "$verify/ffmpeg-release.gpg" --status-fd 1 "$verify/ffmpeg-9.0.2.tar.xz.asc" "$verify/ffmpeg-9.0.2.tar.xz" >"$verify/signature-status.txt"
+awk '$1=="[GNUPG:]" && $2=="VALIDSIG" && ($3=="FCF986EA15E6E293A5644F10B4322F04D67658D8" || $NF=="FCF986EA15E6E293A5644F10B4322F04D67658D8") { valid=1 } END {exit !valid}' "$verify/signature-status.txt"
+echo 'Pinned FFmpeg archive and signing primary verified without an agent'
 builder="mochitodon-${source_commit:0:12}"
 if docker buildx inspect "$builder" >/dev/null 2>&1; then
   builder_container="buildx_buildkit_${builder}0"
