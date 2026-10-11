@@ -18,6 +18,7 @@ RSpec.describe 'Instances' do
         expect(response.parsed_body)
           .to be_present
           .and include(title: 'Mastodon')
+          .and include_media_limits
       end
     end
 
@@ -33,7 +34,22 @@ RSpec.describe 'Instances' do
         expect(response.parsed_body)
           .to be_present
           .and include(title: 'Mastodon')
+          .and include_media_limits
       end
+    end
+
+    def include_media_limits
+      include(
+        configuration: include(
+          media_attachments: include(
+            image_size_limit: 16.megabytes,
+            image_matrix_limit: 104_857_600,
+            video_size_limit: 99.megabytes,
+            video_matrix_limit: 8_294_400,
+            video_frame_rate_limit: 120
+          )
+        )
+      )
     end
   end
 end
