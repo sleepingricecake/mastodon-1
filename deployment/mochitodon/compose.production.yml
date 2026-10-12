@@ -1,0 +1,127 @@
+# Private env/path configuration belongs outside Git. Every required value
+# fails closed when unset. Use the separately reviewed deployment helper.
+name: mochitodon
+x-app: &app
+  image: ${MASTODON_IMAGE:?Set tested custom image digest}
+  restart: unless-stopped
+  env_file: ${MASTODON_ENV_FILE:?Private production env file}
+  networks: [outbound, database]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  pids_limit: 512
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '5'}
+  depends_on:
+    db: {condition: service_healthy}
+    redis: {condition: service_healthy}
+services:
+  db:
+    image: docker.io/library/postgres:16.15-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+    restart: unless-stopped
+    env_file: ${POSTGRES_ENV_FILE:?Private PG env file}
+    environment:
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    shm_size: 256mb
+    networks: [database]
+    volumes:
+      - type: bind
+        source: ${PG16_DATA_DIR:?New PG16 data directory}
+        target: /var/lib/postgresql/data
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '5'}
+  redis:
+    image: docker.io/library/redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    restart: unless-stopped
+    env_file: ${REDIS_ENV_FILE:?Private Redis healthcheck auth env}
+    command: [redis-server, /etc/redis/redis.conf]
+    networks: [database]
+    volumes:
+      - type: bind
+        source: ${REDIS_DATA_DIR:?New restored Redis directory}
+        target: /data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${REDIS_CONFIG_FILE:?Private Redis persistence/auth config}
+        target: /etc/redis/redis.conf
+        read_only: true
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD-SHELL, 'redis-cli ping | grep -qx PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '5'}
+  web:
+    <<: *app
+    command: [bundle, exec, puma, -C, config/puma.rb]
+    mem_limit: ${WEB_MEMORY_LIMIT:?Measured web limit}
+    ports: ['127.0.0.1:3000:3000']
+    volumes:
+      - type: bind
+        source: ${MEDIA_DIR:?Existing media with matching numeric owner}
+        target: /opt/mastodon/public/system
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD-SHELL, "curl --silent --fail --noproxy localhost localhost:3000/health | grep -q OK"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+  sidekiq:
+    <<: *app
+    command: [bundle, exec, sidekiq, -c, '${SIDEKIQ_CONCURRENCY:?Measured worker concurrency}']
+    mem_limit: ${SIDEKIQ_MEMORY_LIMIT:?Measured worker limit}
+    volumes:
+      - type: bind
+        source: ${MEDIA_DIR:?Existing media with matching numeric owner}
+        target: /opt/mastodon/public/system
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD-SHELL, "ps aux | grep -q '[s]idekiq\\ 8'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+  streaming:
+    image: ${STREAMING_IMAGE:?Tested streaming image digest}
+    restart: unless-stopped
+    env_file: ${MASTODON_ENV_FILE:?Private production env file}
+    command: [node, ./streaming/index.js]
+    networks: [outbound, database]
+    ports: ['127.0.0.1:4000:4000']
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 256
+    mem_limit: ${STREAMING_MEMORY_LIMIT:?Measured streaming limit}
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, "curl --silent --fail --noproxy localhost localhost:4000/api/v1/streaming/health | grep -q OK"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '5'}
+networks:
+  outbound:
+    driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: 127.0.0.1
+  database:
+    driver: bridge
+    internal: true
+    enable_ipv6: false

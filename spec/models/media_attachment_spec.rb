@@ -137,6 +137,96 @@ RSpec.describe MediaAttachment, :attachment_processing do
     it_behaves_like 'static 600x400 image', 'image/png', '.png'
   end
 
+  describe 'original image resizing' do
+    let(:image_file) do
+      Tempfile.new(['original-image-resizing', '.png']).tap do |file|
+        Vips::Image.black(width, height, bands: 3).write_to_file(file.path)
+        file.binmode
+      end
+    end
+    let(:media) { Fabricate(:media_attachment, file: image_file) }
+
+    after do
+      media.destroy
+      image_file.close!
+    end
+
+    context 'with an image above the former limit but below the restored limit' do
+      let(:width) { 4096 }
+      let(:height) { 4096 }
+
+      it 'preserves the original dimensions' do
+        expect(media_metadata)
+          .to include(original: include(width: 4096, height: 4096))
+      end
+    end
+
+    context 'with an image exactly at the restored limit' do
+      let(:width) { 5120 }
+      let(:height) { 5120 }
+
+      it 'preserves the original dimensions' do
+        expect(media_metadata)
+          .to include(original: include(width: 5120, height: 5120))
+      end
+    end
+
+    context 'with an image above the restored limit' do
+      let(:width) { 5121 }
+      let(:height) { 5121 }
+
+      it 'downsizes the original while preserving its aspect ratio' do
+        expect(media_metadata)
+          .to include(original: include(width: 5120, height: 5120, aspect: 1.0))
+      end
+    end
+  end
+
+  describe 'image input dimensions' do
+    let(:media) { described_class.new }
+    let(:content_type) { 'image/png' }
+    let(:attachment) do
+      instance_double(Paperclip::Attachment,
+                      content_type: content_type,
+                      queued_for_write: { original: instance_double(File, path: 'input.png') })
+    end
+
+    before do
+      allow(FastImage).to receive(:size).with('input.png').and_return([width, height])
+    end
+
+    context 'with an image at the restored input limit' do
+      let(:width) { 10_240 }
+      let(:height) { 10_240 }
+
+      it 'allows input larger than the original resizing limit' do
+        expect { media.send(:check_image_dimension, attachment) }
+          .to_not raise_error
+      end
+    end
+
+    context 'with an image above the restored input limit' do
+      let(:width) { 10_240 }
+      let(:height) { 10_241 }
+
+      it 'rejects the input before image processing' do
+        expect { media.send(:check_image_dimension, attachment) }
+          .to raise_error(Mastodon::DimensionsValidationError)
+      end
+    end
+
+    context 'with a GIF above its existing separate limit' do
+      let(:content_type) { 'image/gif' }
+      let(:width) { 1281 }
+      let(:height) { 720 }
+
+      it 'continues to reject the oversized GIF' do
+        expect { media.send(:check_image_dimension, attachment) }
+          .to raise_error(Mastodon::DimensionsValidationError)
+      end
+    end
+  end
+
   describe 'monochrome jpg' do
     let(:media) { Fabricate(:media_attachment, file: attachment_fixture('monochrome.png')) }
 

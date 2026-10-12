@@ -110,8 +110,8 @@ module Paperclip
     end
 
     def save_options
-      case @format
-      when 'jpg'
+      case (@format.presence || @current_format).to_s.delete_prefix('.').downcase
+      when 'jpg', 'jpeg'
         { Q: 90, interlace: true }
       else
         {}

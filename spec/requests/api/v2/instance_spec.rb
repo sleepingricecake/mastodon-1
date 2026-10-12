@@ -81,6 +81,11 @@ RSpec.describe 'Instances' do
             max_media_attachments: Status::MEDIA_ATTACHMENTS_LIMIT
           ),
           media_attachments: include(
+            image_size_limit: 16.megabytes,
+            image_matrix_limit: 104_857_600,
+            video_size_limit: 99.megabytes,
+            video_matrix_limit: 8_294_400,
+            video_frame_rate_limit: 120,
             description_limit: MediaAttachment::MAX_DESCRIPTION_LENGTH
           ),
           polls: include(

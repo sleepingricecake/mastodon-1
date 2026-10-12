@@ -1,0 +1,118 @@
+# No ports, no bridge interfaces. All services share a network:none namespace.
+# Env paths and all data directories MUST point to isolated copies.
+name: mochitodon-rehearsal
+x-app: &app
+  image: ${REHEARSAL_IMAGE:?Exact intermediate or custom image digest}
+  env_file: ${REHEARSAL_ENV_FILE:?Private COPY of env with rehearsal credentials}
+  environment:
+    DB_HOST: 127.0.0.1
+    DB_PORT: '5432'
+    REDIS_HOST: 127.0.0.1
+    REDIS_PORT: '6379'
+    SMTP_SERVER: 127.0.0.1
+    SMTP_PORT: '1'
+    ES_ENABLED: 'false'
+    BIND: 127.0.0.1
+  network_mode: service:sandbox
+  user: ${REHEARSAL_UID:?Copy media UID}:${REHEARSAL_GID:?Copy media GID}
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  pids_limit: 512
+  mem_limit: ${REHEARSAL_MEMORY_LIMIT:?Measured test app memory bound}
+  volumes:
+    - type: bind
+      source: ${REHEARSAL_MEDIA_DIR:?COPY media directory}
+      target: /opt/mastodon/public/system
+      bind: {create_host_path: false}
+    - type: bind
+      source: ${REHEARSAL_TMP_DIR:?COPY writable temporary directory}
+      target: /opt/mastodon/tmp
+      bind: {create_host_path: false}
+  depends_on:
+    sandbox: {condition: service_started}
+    db: {condition: service_healthy}
+    redis: {condition: service_healthy}
+services:
+  sandbox:
+    image: docker.io/library/postgres:16.15-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+    entrypoint: [sleep, infinity]
+    network_mode: none
+    user: '65534:65534'
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  db:
+    image: docker.io/library/postgres:16.15-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+    network_mode: service:sandbox
+    env_file: ${REHEARSAL_POSTGRES_ENV_FILE:?Private isolated PG credentials}
+    command: [postgres, -c, listen_addresses=127.0.0.1]
+    shm_size: 256mb
+    volumes:
+      - type: bind
+        source: ${REHEARSAL_PG16_DIR:?COPY PG16 data}
+        target: /var/lib/postgresql/data
+        bind: {create_host_path: false}
+    depends_on:
+      sandbox: {condition: service_started}
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  redis:
+    image: docker.io/library/redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    network_mode: service:sandbox
+    env_file: ${REHEARSAL_REDIS_ENV_FILE:?Private isolated Redis health auth}
+    command: [redis-server, /etc/redis/redis.conf, --bind, 127.0.0.1]
+    volumes:
+      - type: bind
+        source: ${REHEARSAL_REDIS_DIR:?COPY Redis data}
+        target: /data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${REHEARSAL_REDIS_CONFIG_FILE:?Private COPY Redis auth/config}
+        target: /etc/redis/redis.conf
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      sandbox: {condition: service_started}
+    healthcheck:
+      test: [CMD-SHELL, 'redis-cli -h 127.0.0.1 ping | grep -qx PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  app:
+    <<: *app
+    entrypoint: [sleep, infinity]
+  web:
+    <<: *app
+    profiles: [boot]
+    command: [bundle, exec, puma, -C, config/puma.rb]
+  sidekiq:
+    <<: *app
+    profiles: [boot]
+    command: [bundle, exec, sidekiq, -c, '1']
+  streaming:
+    image: ${REHEARSAL_STREAMING_IMAGE:?Immutable isolated streaming image}
+    profiles: [boot]
+    env_file: ${REHEARSAL_ENV_FILE:?Private COPY of env}
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5432'
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: '6379'
+      BIND: 127.0.0.1
+      PORT: '4000'
+    network_mode: service:sandbox
+    command: [node, ./streaming/index.js]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    depends_on:
+      sandbox: {condition: service_started}
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, "curl --silent --fail --noproxy localhost localhost:4000/api/v1/streaming/health | grep -q OK"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
