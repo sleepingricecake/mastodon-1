@@ -46,7 +46,7 @@ RSpec.describe Paperclip::LazyThumbnail do
         actual = Vips::Image.new_from_file(output.path)
         expect([actual.width, actual.height]).to eq [256, 192]
 
-        reference = Vips::Image.thumbnail(source.path, 256, height: 192, size: :down)
+        reference = Vips::Image.thumbnail(source.path, 256, height: 192, size: :down).copy_memory
         reference90 = File.join(directory, 'reference90.jpg')
         reference75 = File.join(directory, 'reference75.jpg')
         reference.write_to_file(reference90, Q: 90, interlace: true)
