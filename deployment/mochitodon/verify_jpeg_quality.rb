@@ -82,6 +82,15 @@ Dir.mktmpdir('mastodon-jpeg90-') do |directory|
   image.write_to_file(seed_jpeg, Q: 100)
   image.write_to_file(seed_png)
   target_pixels = 256 * 192
+  # Materialize a separate reference so the comparison does not reuse a
+  # sequential thumbnail pipeline already consumed by the processor.
+  reference = image.resize(0.5).copy_memory
+  reference90 = File.join(directory, 'reference90.jpg')
+  reference75 = File.join(directory, 'reference75.jpg')
+  reference.write_to_file(reference90, Q: 90, interlace: true)
+  reference.write_to_file(reference75, Q: 75, interlace: true)
+  tables90 = quantization_tables(reference90)
+  tables75 = quantization_tables(reference75)
   cases = [
     ['original .jpg', nil, 'uploaded.jpg', seed_jpeg],
     ['original .jpeg', nil, 'uploaded.jpeg', seed_jpeg],
@@ -100,14 +109,9 @@ Dir.mktmpdir('mastodon-jpeg90-') do |directory|
     transformed = Vips::Image.new_from_file(output.path)
     raise "#{label}: unexpected dimensions" unless [transformed.width, transformed.height] == [256, 192]
 
-    reference90 = File.join(directory, 'reference90.jpg')
-    reference75 = File.join(directory, 'reference75.jpg')
-    reference = Vips::Image.thumbnail(source.path, 256, height: 192, size: :down)
-    reference.write_to_file(reference90, Q: 90, interlace: true)
-    reference.write_to_file(reference75, Q: 75, interlace: true)
     actual_tables = quantization_tables(output.path)
-    raise "#{label}: JPEG is not encoded with quality90 tables" unless actual_tables == quantization_tables(reference90)
-    raise "#{label}: indistinguishable from quality75" if actual_tables == quantization_tables(reference75)
+    raise "#{label}: JPEG is not encoded with quality90 tables" unless actual_tables == tables90
+    raise "#{label}: indistinguishable from quality75" if actual_tables == tables75
 
     puts "PASS: #{label}: actual JPEG processing, 256x192, Q90 quantization"
     output.close!
